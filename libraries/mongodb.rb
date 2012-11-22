@@ -79,9 +79,18 @@ class Chef::ResourceDefinitionList::MongoDB
     end
     if result.fetch("ok", nil) == 1
       # everything is fine, do nothing
-    elsif result.fetch("errmsg", nil) == "already initialized"
+    elsif result.fetch("errmsg", nil) == "already initialized" || result.fetch("errmsg", nil) =~ /is already initiated$/
       # check if both configs are the same
-      config = connection['local']['system']['replset'].find_one({"_id" => name})
+      if result.fetch("errmsg", nil) == "already initialized"
+        config = connection['local']['system']['replset'].find_one({"_id" => name})
+      else
+        rs_connection = Mongo::ReplSetConnection.new(rs_members.collect{ |member| member['host'] })
+        primary_connection = Mongo::Connection.new(rs_connection.host, rs_connection.port, :op_timeout => 5, :slave_ok => true)
+        config = primary_connection['local']['system']['replset'].find_one({"_id" => name})
+        rs_connection.close
+        primary_connection.close
+      end
+
       if config['_id'] == name and config['members'] == rs_members
         # config is up-to-date, do nothing
         Chef::Log.info("Replicaset '#{name}' already configured")
@@ -131,7 +140,7 @@ class Chef::ResourceDefinitionList::MongoDB
           config['members'] << {"_id" => max_id, "host" => m}
         end
 
-        rs_connection = Mongo::ReplSetConnection.new( *old_members.collect{ |m| m.split(":") })
+        rs_connection = Mongo::ReplSetConnection.new(old_members)
         admin = rs_connection['admin']
 
         cmd = BSON::OrderedHash.new
